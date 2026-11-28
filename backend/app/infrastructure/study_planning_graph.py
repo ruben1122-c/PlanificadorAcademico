@@ -72,7 +72,9 @@ class StudyPlanningPipeline:
             timeout=15,
             max_retries=1,
         )
-        self._structured_llm = llm.with_structured_output(StudyPlanOutput)
+        self._structured_llm = llm.with_structured_output(
+            StudyPlanOutput, method="json_schema"
+        )
         self._graph = self._build_graph()
 
     def _build_graph(self) -> Any:

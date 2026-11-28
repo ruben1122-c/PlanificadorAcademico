@@ -29,6 +29,34 @@ const NAV_ITEMS: Array<{ id: AppTab; label: string }> = [
   { id: "schedule", label: "Cronograma" },
 ];
 
+interface WorkspaceLocation {
+  tab: AppTab;
+  courseId: string | null;
+  documentId: string | null;
+}
+
+function readWorkspaceLocation(): WorkspaceLocation {
+  const query = new URLSearchParams(window.location.search);
+  const tab = NAV_ITEMS.find((item) => item.id === query.get("section"));
+  return {
+    tab: tab?.id ?? "courses",
+    courseId: query.get("course"),
+    documentId: query.get("course") ? query.get("document") : null,
+  };
+}
+
+function replaceWorkspaceLocation(location: WorkspaceLocation): void {
+  const url = new URL(window.location.href);
+  url.searchParams.set("section", location.tab);
+  if (location.courseId) url.searchParams.set("course", location.courseId);
+  else url.searchParams.delete("course");
+  if (location.documentId) url.searchParams.set("document", location.documentId);
+  else url.searchParams.delete("document");
+  if (url.href !== window.location.href) {
+    window.history.replaceState(window.history.state, "", url);
+  }
+}
+
 export function App() {
   const [healthOnline, setHealthOnline] = useState<boolean>(false);
   const [healthLoading, setHealthLoading] = useState<boolean>(true);
@@ -42,11 +70,12 @@ export function App() {
     Boolean(localStorage.getItem(TOKEN_STORAGE_KEY))
   );
 
-  const [activeTab, setActiveTab] = useState<AppTab>("courses");
+  const [workspace, setWorkspace] = useState(readWorkspaceLocation);
+  const { tab: activeTab, courseId: activeCourseId, documentId } = workspace;
   const [courses, setCourses] = useState<Course[]>([]);
   const [coursesLoading, setCoursesLoading] = useState<boolean>(false);
   const [coursesError, setCoursesError] = useState<string | null>(null);
-  const [activeCourseId, setActiveCourseId] = useState<string | null>(null);
+  const [coursesVerified, setCoursesVerified] = useState(false);
   const courseRequest = useRef(0);
 
   const verifyHealth = useCallback(async () => {
@@ -111,12 +140,17 @@ export function App() {
       const data = await listCourses(token);
       if (request !== courseRequest.current) return;
       setCourses(data);
-      setActiveCourseId((prev) => {
-        if (prev && data.some((course) => course.id === prev)) {
-          return prev;
+      setWorkspace((previous) => {
+        if (previous.courseId && data.some((course) => course.id === previous.courseId)) {
+          return previous;
         }
-        return data[0]?.id ?? null;
+        return {
+          tab: previous.courseId ? "courses" : previous.tab,
+          courseId: data[0]?.id ?? null,
+          documentId: null,
+        };
       });
+      setCoursesVerified(true);
     } catch (err) {
       if (request !== courseRequest.current) return;
       setCoursesError(
@@ -130,7 +164,7 @@ export function App() {
   useEffect(() => {
     if (!token || !user) {
       setCourses([]);
-      setActiveCourseId(null);
+      setCoursesVerified(false);
       setCoursesError(null);
       return;
     }
@@ -142,12 +176,27 @@ export function App() {
     [courses, activeCourseId]
   );
 
+  useEffect(() => {
+    if (user && coursesVerified) replaceWorkspaceLocation(workspace);
+  }, [user, coursesVerified, workspace]);
+
+  function setActiveTab(tab: AppTab) {
+    setWorkspace((previous) => ({ ...previous, tab }));
+  }
+
+  const handleDocumentChange = useCallback((courseId: string, documentId: string | null) => {
+    setWorkspace((previous) =>
+      previous.courseId === courseId && previous.documentId !== documentId
+        ? { ...previous, documentId }
+        : previous
+    );
+  }, []);
+
   function handleLoginSuccess(session: LoginResponse) {
     courseRequest.current += 1;
     localStorage.setItem(TOKEN_STORAGE_KEY, session.access_token);
-    setActiveTab("courses");
     setCourses([]);
-    setActiveCourseId(null);
+    setCoursesVerified(false);
     setCoursesError(null);
     setToken(session.access_token);
     setUser(session.user);
@@ -159,19 +208,22 @@ export function App() {
     setToken(null);
     setUser(null);
     setCourses([]);
-    setActiveCourseId(null);
+    setCoursesVerified(false);
     setCoursesError(null);
-    setActiveTab("courses");
+    const initial: WorkspaceLocation = { tab: "courses", courseId: null, documentId: null };
+    setWorkspace(initial);
+    replaceWorkspaceLocation(initial);
   }
 
   function handleSelectCourse(courseId: string) {
-    setActiveCourseId(courseId);
+    setWorkspace((previous) =>
+      previous.courseId === courseId ? previous : { ...previous, courseId, documentId: null }
+    );
   }
 
   function handleCourseCreated(created: Course) {
     setCourses((prev) => [created, ...prev]);
-    setActiveCourseId(created.id);
-    setActiveTab("courses");
+    setWorkspace({ tab: "courses", courseId: created.id, documentId: null });
   }
 
   return (
@@ -319,8 +371,13 @@ export function App() {
               hidden={activeTab !== "syllabus"}
             >
               <SyllabusSection
+                key={activeCourse?.id ?? "no-course"}
                 token={token}
+                userId={user.id}
                 course={activeCourse}
+                visible={activeTab === "syllabus"}
+                documentId={documentId}
+                onDocumentChange={handleDocumentChange}
                 onGoToCourses={() => setActiveTab("courses")}
                 onGoToNewCourse={() => setActiveTab("new-course")}
               />

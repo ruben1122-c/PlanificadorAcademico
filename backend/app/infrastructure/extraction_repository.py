@@ -5,13 +5,14 @@ from uuid import UUID
 
 import psycopg
 
-from app.domain.exceptions import ExternalServiceError
+from app.domain.exceptions import DocumentNotFoundError, ExternalServiceError
 from app.domain.models import (
     ExtractedActivity,
     ExtractionConflict,
     ExtractionExecution,
 )
 from app.infrastructure.db import get_db_connection
+from app.infrastructure.syllabus_course_lock import require_course, require_idle_syllabus
 
 _EXECUTION_COLUMNS = (
     "id, owner_id, document_id, course_id, status, model_name, total_pages, "
@@ -135,18 +136,22 @@ class PostgresExtractionRepository:
         try:
             with get_db_connection(self._database_url) as conn:
                 with conn.cursor() as cur:
+                    require_course(cur, owner_id, course_id, lock=True)
                     cur.execute(
-                        "SELECT id FROM public.documents WHERE id = %s AND owner_id = %s FOR UPDATE",
-                        (document_id, owner_id),
+                        "SELECT id FROM public.documents WHERE id = %s AND owner_id = %s AND course_id = %s FOR UPDATE",
+                        (document_id, owner_id, course_id),
                     )
+                    if cur.fetchone() is None:
+                        raise DocumentNotFoundError("Documento no encontrado.")
                     cur.execute(
                         f"SELECT {_EXECUTION_COLUMNS} FROM public.extraction_executions "
                         "WHERE document_id = %s AND owner_id = %s AND status <> 'failed' "
-                        "ORDER BY created_at DESC LIMIT 1",
+                        "ORDER BY created_at DESC, id DESC LIMIT 1",
                         (document_id, owner_id),
                     )
                     row = cur.fetchone()
                     if row is None:
+                        require_idle_syllabus(cur, owner_id, course_id)
                         cur.execute(query, (owner_id, document_id, course_id, model_name))
                         row = cur.fetchone()
         except psycopg.Error as exc:
@@ -289,7 +294,7 @@ class PostgresExtractionRepository:
         clauses = ["id = %s", "owner_id = %s"]
         params: list[Any] = [stage, json.dumps(stage_timings), execution_id, owner_id]
         if worker_id is not None:
-            clauses.append("worker_id = %s")
+            clauses.extend(("worker_id = %s", "status = 'running'", "lease_expires_at > clock_timestamp()"))
             params.append(worker_id)
 
         query = f"""
@@ -344,7 +349,7 @@ class PostgresExtractionRepository:
         where_clauses = ["id = %s", "owner_id = %s"]
         params.extend([execution_id, owner_id])
         if worker_id is not None:
-            where_clauses.append("worker_id = %s")
+            where_clauses.extend(("worker_id = %s", "status = 'running'", "lease_expires_at > clock_timestamp()"))
             params.append(worker_id)
 
         query = f"""
@@ -386,7 +391,7 @@ class PostgresExtractionRepository:
         where_clauses = ["id = %s", "owner_id = %s"]
         params.extend([execution_id, owner_id])
         if worker_id is not None:
-            where_clauses.append("worker_id = %s")
+            where_clauses.extend(("worker_id = %s", "status = 'running'", "lease_expires_at > clock_timestamp()"))
             params.append(worker_id)
 
         query = f"""
@@ -411,11 +416,33 @@ class PostgresExtractionRepository:
         execution_id: UUID,
         activities: list[dict[str, Any]],
         conflicts: list[dict[str, Any]],
-    ) -> tuple[int, int]:
-        """Atomically replace previous activities/conflicts for a document and insert new ones."""
+        worker_id: str | None = None,
+    ) -> tuple[int, int] | None:
+        """Replace the results only while the worker still owns the execution."""
         try:
             with get_db_connection(self._database_url) as conn:
                 with conn.cursor() as cur:
+                    if worker_id is not None:
+                        cur.execute(
+                            """
+                            SELECT worker_id, status, lease_expires_at
+                            FROM public.extraction_executions
+                            WHERE id = %s AND owner_id = %s AND course_id = %s AND document_id = %s
+                            FOR UPDATE
+                            """,
+                            (execution_id, owner_id, course_id, document_id),
+                        )
+                        execution = cur.fetchone()
+                        cur.execute("SELECT clock_timestamp() AS current_time")
+                        current_time = cur.fetchone()["current_time"]
+                        if (
+                            execution is None
+                            or execution["worker_id"] != worker_id
+                            or execution["status"] != "running"
+                            or execution["lease_expires_at"] is None
+                            or execution["lease_expires_at"] <= current_time
+                        ):
+                            return None
                     cur.execute(
                         """
                         DELETE FROM public.extraction_conflicts

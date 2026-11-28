@@ -107,6 +107,31 @@ class ExecutionResponse(BaseModel):
     updated_at: datetime
 
 
+class UploadReservationRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+
+
+class UploadReservationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    upload_id: UUID
+    expires_at: datetime
+
+
+class UploadStatusResponse(UploadReservationResponse):
+    filename: str
+    status: Literal["reserved", "receiving"]
+
+
+class SyllabusStatusResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    upload: UploadStatusResponse | None
+    document: DocumentResponse | None
+    execution: ExecutionResponse | None
+    active_execution: ExecutionResponse | None
+
+
 class ActivityResponse(BaseModel):
     """Extracted academic activity representation."""
 

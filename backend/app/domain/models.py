@@ -55,6 +55,14 @@ class SyllabusDocument:
 
 
 @dataclass(frozen=True)
+class UploadReservation:
+    upload_id: UUID
+    filename: str
+    expires_at: datetime
+    status: str
+
+
+@dataclass(frozen=True)
 class ExtractionExecution:
     """Async execution record for a syllabus extraction pipeline run."""
 
@@ -78,6 +86,14 @@ class ExtractionExecution:
     attempt_count: int = 0
     stage: str | None = None
     stage_timings: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SyllabusStatus:
+    upload: UploadReservation | None
+    document: SyllabusDocument | None
+    execution: ExtractionExecution | None
+    active_execution: ExtractionExecution | None
 
 
 @dataclass(frozen=True)

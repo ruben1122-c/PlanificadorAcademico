@@ -19,6 +19,7 @@ from app.infrastructure.course_repository import PostgresCourseRepository
 from app.infrastructure.document_repository import PostgresDocumentRepository
 from app.infrastructure.extraction_repository import PostgresExtractionRepository
 from app.infrastructure.groq_principal import GroqPrincipal
+from app.infrastructure.pdf_validation import validate_syllabus_pdf
 from app.infrastructure.planning_repository import PostgresPlanningRepository
 from app.infrastructure.study_planning_graph import StudyPlanningPipeline
 from app.infrastructure.supabase_auth import SupabaseAuthGateway
@@ -57,6 +58,7 @@ def get_document_service() -> DocumentService:
             service_role_key=storage_config.service_role_key,
         ),
         storage_bucket=storage_config.bucket,
+        pdf_validator=validate_syllabus_pdf,
     )
 
 
@@ -82,6 +84,7 @@ def get_extraction_service() -> ExtractionService:
         pipeline=pipeline,
         principal=GroqPrincipal(groq_config.api_key, groq_config.model),
         model_name=groq_config.model,
+        pdf_validator=validate_syllabus_pdf,
     )
 
 

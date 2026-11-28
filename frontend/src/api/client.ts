@@ -4,6 +4,7 @@ import type {
   AvailabilityWindow,
   Course,
   CourseCreatePayload,
+  CourseSyllabusStatus,
   DocumentActivitiesResponse,
   ExtractedActivity,
   ExtractionExecution,
@@ -12,6 +13,7 @@ import type {
   PlanningRunPayload,
   StudyPlan,
   SyllabusDocument,
+  UploadReservation,
   User,
 } from "../types/api";
 
@@ -41,6 +43,13 @@ async function extractErrorMessage(response: Response): Promise<string> {
     // Ignore non-JSON error responses and fall back to HTTP status.
   }
   return `HTTP ${response.status}`;
+}
+
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
 }
 
 export async function apiRequest<T>(
@@ -74,7 +83,7 @@ export async function apiRequest<T>(
 
   if (!response.ok) {
     const message = await extractErrorMessage(response);
-    throw new Error(message);
+    throw new ApiError(message, response.status);
   }
 
   return (await response.json()) as T;
@@ -119,11 +128,13 @@ export function getCourseById(token: string, courseId: string): Promise<Course> 
 export function uploadCourseDocument(
   token: string,
   courseId: string,
-  file: File
+  file: File,
+  uploadId?: string
 ): Promise<SyllabusDocument> {
   const formData = new FormData();
   formData.append("course_id", courseId);
   formData.append("file", file);
+  if (uploadId) formData.append("upload_id", uploadId);
 
   return apiRequest<SyllabusDocument>("/documents", {
     method: "POST",
@@ -132,13 +143,38 @@ export function uploadCourseDocument(
   });
 }
 
+export function reserveSyllabusUpload(
+  token: string,
+  courseId: string,
+  filename: string
+): Promise<UploadReservation> {
+  return apiRequest<UploadReservation>(
+    `/courses/${encodeURIComponent(courseId)}/upload-reservations`,
+    { method: "POST", token, body: { filename } }
+  );
+}
+
+export function getCourseSyllabusStatus(
+  token: string,
+  courseId: string,
+  documentId?: string | null,
+  signal?: AbortSignal
+): Promise<CourseSyllabusStatus> {
+  const query = documentId ? `?document_id=${encodeURIComponent(documentId)}` : "";
+  return apiRequest<CourseSyllabusStatus>(
+    `/courses/${encodeURIComponent(courseId)}/syllabus-status${query}`,
+    { token, signal }
+  );
+}
+
 export function listCourseDocuments(
   token: string,
-  courseId: string
+  courseId: string,
+  signal?: AbortSignal
 ): Promise<SyllabusDocument[]> {
   return apiRequest<SyllabusDocument[]>(
     `/documents?course_id=${encodeURIComponent(courseId)}`,
-    { token }
+    { token, signal }
   );
 }
 
@@ -168,11 +204,12 @@ export function getExecutionStatus(
 
 export function getDocumentActivities(
   token: string,
-  documentId: string
+  documentId: string,
+  signal?: AbortSignal
 ): Promise<DocumentActivitiesResponse> {
   return apiRequest<DocumentActivitiesResponse>(
     `/documents/${encodeURIComponent(documentId)}/activities`,
-    { token }
+    { token, signal }
   );
 }
 

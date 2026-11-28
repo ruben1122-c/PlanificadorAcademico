@@ -1,5 +1,6 @@
 import logging
 import time
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -58,6 +59,7 @@ class ExtractionService:
         storage_gateway: StorageGateway,
         pipeline: ExtractionPipeline,
         model_name: str,
+        pdf_validator: Callable[[bytes], None],
         principal: Principal | None = None,
     ) -> None:
         self._course_repository = course_repository
@@ -66,6 +68,7 @@ class ExtractionService:
         self._storage_gateway = storage_gateway
         self._pipeline = pipeline
         self._model_name = model_name
+        self._pdf_validator = pdf_validator
         self._principal = principal
 
     def start_extraction(
@@ -138,6 +141,11 @@ class ExtractionService:
             )
             stage_timings["download_pdf_ms"] = round((time.monotonic() - t0) * 1000, 2)
 
+            _record_stage("validate_pdf")
+            t0 = time.monotonic()
+            self._pdf_validator(pdf_bytes)
+            stage_timings["validate_pdf_ms"] = round((time.monotonic() - t0) * 1000, 2)
+
             t0 = time.monotonic()
             if self._principal is not None:
                 _record_stage("principal_delegate")
@@ -160,7 +168,7 @@ class ExtractionService:
 
             t0 = time.monotonic()
             _record_stage("persist_results")
-            activities_count, conflicts_count = (
+            counts = (
                 self._extraction_repository.replace_document_extraction_results(
                     owner_id=owner_id,
                     course_id=course.id,
@@ -168,8 +176,12 @@ class ExtractionService:
                     execution_id=execution_id,
                     activities=result["activities"],
                     conflicts=result["conflicts"],
+                    worker_id=worker_id,
                 )
             )
+            if counts is None:
+                return
+            activities_count, conflicts_count = counts
             stage_timings["persist_results_ms"] = round(
                 (time.monotonic() - t0) * 1000, 2
             )

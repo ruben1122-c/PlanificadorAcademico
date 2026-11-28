@@ -139,7 +139,9 @@ class SyllabusExtractionPipeline:
             timeout=15,
             max_retries=1,
         )
-        self._structured_llm = llm.with_structured_output(PageExtractionOutput)
+        self._structured_llm = llm.with_structured_output(
+            PageExtractionOutput, method="json_schema"
+        )
         self._graph = self._build_graph()
 
     def _build_graph(self) -> Any:

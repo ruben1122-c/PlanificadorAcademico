@@ -30,6 +30,10 @@ class ValidationError(DomainError):
     """Raised when domain input violates business rules."""
 
 
+class SyllabusBusyError(DomainError):
+    """Raised when a course upload or extraction cannot acquire its reservation."""
+
+
 class ConfigurationError(DomainError):
     """Raised when required runtime configuration is missing."""
 

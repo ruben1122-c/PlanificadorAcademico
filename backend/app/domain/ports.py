@@ -13,6 +13,8 @@ from app.domain.models import (
     PlanningExecution,
     StudyPlan,
     SyllabusDocument,
+    SyllabusStatus,
+    UploadReservation,
 )
 from app.domain.planning_rules import StudyBlock, StudyWindow
 
@@ -63,23 +65,40 @@ class StorageGateway(Protocol):
     def download_private_file(self, bucket: str, path: str) -> bytes:
         """Download a file from a private storage bucket."""
 
+    def delete_private_file(self, bucket: str, path: str) -> None:
+        """Delete an uncommitted file from private storage."""
+
 
 class DocumentRepository(Protocol):
     """Port for owner-scoped syllabus document persistence."""
 
-    def create(
+    def reserve_upload(
+        self, owner_id: UUID, course_id: UUID, filename: str
+    ) -> UploadReservation: ...
+
+    def claim_upload(
+        self, owner_id: UUID, course_id: UUID, upload_id: UUID, sha256: str
+    ) -> tuple[UploadReservation, SyllabusDocument | None]: ...
+
+    def finish_upload(
         self,
-        document_id: UUID,
+        upload_id: UUID,
         owner_id: UUID,
         course_id: UUID,
-        filename: str,
-        content_type: str,
         file_size: int,
         storage_bucket: str,
         storage_path: str,
         sha256: str,
-    ) -> SyllabusDocument:
-        """Persist a new syllabus document record."""
+    ) -> SyllabusDocument: ...
+
+    def fail_upload(
+        self, owner_id: UUID, course_id: UUID, upload_id: UUID, *, receiving: bool
+    ) -> bool:
+        """Release this upload only if it belongs to the caller and expected phase."""
+
+    def get_syllabus_status(
+        self, owner_id: UUID, course_id: UUID, document_id: UUID | None
+    ) -> SyllabusStatus: ...
 
     def list_by_owner(
         self, owner_id: UUID, course_id: UUID | None = None
@@ -166,7 +185,8 @@ class ExtractionRepository(Protocol):
         execution_id: UUID,
         activities: list[dict[str, Any]],
         conflicts: list[dict[str, Any]],
-    ) -> tuple[int, int]:
+        worker_id: str | None = None,
+    ) -> tuple[int, int] | None:
         """Persist extracted activities and conflicts for a document execution."""
 
     def list_activities_by_document_for_owner(

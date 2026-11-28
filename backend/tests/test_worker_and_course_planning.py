@@ -140,6 +140,7 @@ class CoursePlanningAndWorkerTest(unittest.TestCase):
             storage_gateway=MagicMock(),
             pipeline=MagicMock(),
             model_name="test-model",
+            pdf_validator=MagicMock(),
         )
         service.run_extraction_job(
             execution_id=uuid4(),

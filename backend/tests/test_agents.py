@@ -63,6 +63,9 @@ class DocumentalTest(unittest.TestCase):
         self.assertEqual([a["source_page"] for a in result["activities"]], [1, 2])
         self.assertTrue(all(a["evidence_valid"] for a in result["activities"]))
         self.assertIn("contradictory_due_dates", {c["conflict_type"] for c in result["conflicts"]})
+        groq.return_value.with_structured_output.assert_called_once_with(
+            PageExtractionOutput, method="json_schema"
+        )
 
     def test_provider_failure_is_reported_as_extraction_error(self):
         with patch("app.infrastructure.syllabus_extraction_graph.ChatGroq") as groq:
@@ -96,5 +99,8 @@ class PlannerTest(unittest.TestCase):
             result = StudyPlanningPipeline("test", "test").run(
                 activities=[item], availability=[slot], horizon=slot
             )
+        groq.return_value.with_structured_output.assert_called_once_with(
+            StudyPlanOutput, method="json_schema"
+        )
         self.assertEqual(len(result["accepted_blocks"]), 1)
         self.assertEqual(result["pending"], {item.activity_id: "INSUFFICIENT_AVAILABILITY"})

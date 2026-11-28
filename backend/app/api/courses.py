@@ -2,9 +2,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.dependencies import get_course_service, get_current_user
-from app.api.schemas import CourseCreateRequest, CourseResponse
+from app.api.dependencies import get_course_service, get_current_user, get_document_service
+from app.api.schemas import (
+    CourseCreateRequest,
+    CourseResponse,
+    SyllabusStatusResponse,
+    UploadReservationRequest,
+    UploadReservationResponse,
+)
 from app.application.course_service import CourseService
+from app.application.document_service import DocumentService
 from app.domain.models import AuthenticatedUser
 
 router = APIRouter(prefix="/courses", tags=["courses"])
@@ -54,3 +61,29 @@ def get_course(
         owner_id=current_user.id,
     )
     return CourseResponse.model_validate(course)
+
+
+@router.post(
+    "/{course_id}/upload-reservations",
+    response_model=UploadReservationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def reserve_upload(
+    course_id: UUID,
+    payload: UploadReservationRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    document_service: DocumentService = Depends(get_document_service),
+) -> UploadReservationResponse:
+    upload = document_service.reserve_upload(current_user.id, course_id, payload.filename)
+    return UploadReservationResponse.model_validate(upload)
+
+
+@router.get("/{course_id}/syllabus-status", response_model=SyllabusStatusResponse)
+def get_syllabus_status(
+    course_id: UUID,
+    document_id: UUID | None = None,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    document_service: DocumentService = Depends(get_document_service),
+) -> SyllabusStatusResponse:
+    syllabus = document_service.get_syllabus_status(current_user.id, course_id, document_id)
+    return SyllabusStatusResponse.model_validate(syllabus)

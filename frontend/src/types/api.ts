@@ -48,6 +48,23 @@ export interface SyllabusDocument {
   created_at: string;
 }
 
+export interface UploadReservation {
+  upload_id: string;
+  expires_at: string;
+}
+
+export interface ActiveSyllabusUpload extends UploadReservation {
+  filename: string;
+  status: "reserved" | "receiving";
+}
+
+export interface CourseSyllabusStatus {
+  upload: ActiveSyllabusUpload | null;
+  document: SyllabusDocument | null;
+  execution: ExtractionExecution | null;
+  active_execution: ExtractionExecution | null;
+}
+
 export type ExecutionStatus = "pending" | "running" | "completed" | "failed";
 
 export interface ExtractionExecution {

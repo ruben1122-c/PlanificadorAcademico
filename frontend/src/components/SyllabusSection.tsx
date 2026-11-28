@@ -1,27 +1,34 @@
-import { useExecutionPolling } from "../hooks/useExecutionPolling";
+import { useSyllabusStatus } from "../hooks/useSyllabusStatus";
 import { ExecutionStage } from "./ExecutionStage";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
+  ApiError,
   getDocumentActivities,
   listCourseDocuments,
+  reserveSyllabusUpload,
   reviewActivity,
   startDocumentExtraction,
   uploadCourseDocument,
 } from "../api/client";
 import type {
   ActivityType,
+  ActiveSyllabusUpload,
   Course,
   ExecutionStatus,
   ExtractedActivity,
   ExtractionConflict,
-  ExtractionExecution,
   ReviewStatus,
   SyllabusDocument,
+  UploadReservation,
 } from "../types/api";
 
 interface SyllabusSectionProps {
   token: string;
+  userId: string;
   course: Course | null;
+  visible: boolean;
+  documentId: string | null;
+  onDocumentChange: (courseId: string, documentId: string | null) => void;
   onGoToCourses: () => void;
   onGoToNewCourse: () => void;
 }
@@ -85,26 +92,52 @@ function getReviewBadgeClass(status: ReviewStatus): string {
   return "badge badge--neutral";
 }
 
+function saveUploadAttempt(key: string, attempt: UploadReservation | null) {
+  try {
+    if (attempt) sessionStorage.setItem(key, JSON.stringify(attempt));
+    else sessionStorage.removeItem(key);
+  } catch {
+    // The server can recover the current operation if storage is disabled.
+  }
+}
+
+function readUploadAttempt(key: string): UploadReservation | null {
+  try {
+    const saved = sessionStorage.getItem(key);
+    if (!saved) return null;
+    const attempt: Partial<UploadReservation> | null = JSON.parse(saved);
+    if (typeof attempt?.upload_id === "string"
+      && typeof attempt.expires_at === "string"
+      && Number.isFinite(Date.parse(attempt.expires_at))) {
+      return { upload_id: attempt.upload_id, expires_at: attempt.expires_at };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function SyllabusSection({
   token,
+  userId,
   course,
+  visible,
+  documentId,
+  onDocumentChange,
   onGoToCourses,
   onGoToNewCourse,
 }: SyllabusSectionProps) {
   const [documents, setDocuments] = useState<SyllabusDocument[]>([]);
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [documentsLoaded, setDocumentsLoaded] = useState(false);
+  const [documentsError, setDocumentsError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [docsLoading, setDocsLoading] = useState(false);
-
-  const [executionByCourse, setExecutionByCourse] = useState<
-    Record<string, ExtractionExecution>
-  >({});
   const [startingExtraction, setStartingExtraction] = useState(false);
 
   const [activities, setActivities] = useState<ExtractedActivity[]>([]);
   const [conflicts, setConflicts] = useState<ExtractionConflict[]>([]);
-  const [activitiesLoading, setActivitiesLoading] = useState(false);
+  const [activityDocumentId, setActivityDocumentId] = useState<string | null>(null);
+  const [activitiesError, setActivitiesError] = useState<string | null>(null);
 
   const [editingActivityId, setEditingActivityId] = useState<string | null>(
     null
@@ -120,99 +153,123 @@ export function SyllabusSection({
   const [savingReviewId, setSavingReviewId] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const courseId = course?.id ?? null;
-  const activeCourseRef = useRef<string | null>(courseId);
-  activeCourseRef.current = courseId;
-
-  const execution = courseId ? (executionByCourse[courseId] ?? null) : null;
-
-  const activityRequest = useRef(0);
-  const loadActivities = useCallback(
-    async (docId: string, expectedCourseId: string) => {
-      const request = ++activityRequest.current;
-      setActivitiesLoading(true);
-      setError(null);
-      try {
-        const data = await getDocumentActivities(token, docId);
-        if (request !== activityRequest.current || activeCourseRef.current !== expectedCourseId) return;
-        setActivities(data.activities);
-        setConflicts(data.conflicts);
-      } catch (err) {
-        if (request !== activityRequest.current || activeCourseRef.current !== expectedCourseId) return;
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Error cargando actividades extraídas"
-        );
-      } finally {
-        if (request === activityRequest.current && activeCourseRef.current === expectedCourseId) {
-          setActivitiesLoading(false);
-        }
-      }
-    },
-    [token]
+  const uploadAttemptKey = `planificador_upload:${userId}:${courseId}`;
+  const mounted = useRef(false);
+  const previousUpload = useRef<ActiveSyllabusUpload | null>(null);
+  const uploadAttempt = useRef<UploadReservation | null>(null);
+  const authorizedDocumentId = documents.some((item) => item.id === documentId)
+    ? documentId
+    : null;
+  const { snapshot, statusError, refreshStatus } = useSyllabusStatus(
+    token, courseId, authorizedDocumentId, visible,
   );
+  const status = snapshot?.status;
+  const selectedDocId = authorizedDocumentId ?? (
+    documentId && !documentsLoaded ? null : status?.document?.id ?? documents[0]?.id ?? null
+  );
+  const selectedExecution = status?.execution?.document_id === selectedDocId
+    ? status.execution
+    : null;
+  const completedExecutionId = selectedExecution?.status === "completed"
+    ? selectedExecution.id
+    : null;
+  const execution = status?.active_execution ?? selectedExecution;
+  const courseBusy = Boolean(status?.upload || status?.active_execution);
+  const canStartOperation = Boolean(status)
+    && !statusError && !courseBusy && !uploading && !startingExtraction;
+  const activitiesLoading = selectedDocId !== activityDocumentId && !activitiesError;
 
   useEffect(() => {
-    activityRequest.current += 1;
-    setActivitiesLoading(false);
-    setDocuments([]);
-    setSelectedDocId(null);
-    setSelectedFile(null);
-    setActivities([]);
-    setConflicts([]);
-    setEditingActivityId(null);
-    setError(null);
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
-    if (!courseId) {
-      setDocsLoading(false);
-      return;
-    }
+  useEffect(() => {
+    uploadAttempt.current = readUploadAttempt(uploadAttemptKey);
+  }, [uploadAttemptKey]);
 
-    let cancelled = false;
-    const targetCourseId = courseId;
-    setDocsLoading(true);
+  useEffect(() => {
+    if (!courseId || !visible || documentsLoaded) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setDocumentsError(null);
 
-    void listCourseDocuments(token, targetCourseId)
-      .then(async (docs) => {
-        if (cancelled || activeCourseRef.current !== targetCourseId) return;
-        setDocuments(docs);
-        if (docs.length > 0) {
-          const firstId = docs[0].id;
-          setSelectedDocId(firstId);
-          await loadActivities(firstId, targetCourseId);
-        }
+    void listCourseDocuments(token, courseId, signal)
+      .then((list) => {
+        if (signal.aborted) return;
+        setDocuments((current) => [
+          ...current.filter((document) => !list.some((item) => item.id === document.id)),
+          ...list,
+        ]);
+        setDocumentsLoaded(true);
       })
       .catch((err) => {
-        if (cancelled || activeCourseRef.current !== targetCourseId) return;
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Error cargando documentos del curso"
-        );
-      })
-      .finally(() => {
-        if (!cancelled && activeCourseRef.current === targetCourseId) {
-          setDocsLoading(false);
+        if (!signal.aborted) {
+          setDocumentsError(err instanceof Error ? err.message : "No se pudieron cargar los documentos.");
         }
       });
+    return () => controller.abort();
+  }, [token, courseId, visible, documentsLoaded]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [token, courseId, loadActivities]);
+  useEffect(() => {
+    const latest = snapshot?.latestDocument;
+    if (latest) {
+      setDocuments((current) => current.some((item) => item.id === latest.id)
+        ? current
+        : [latest, ...current]);
+    }
+    if (!snapshot) return;
+    const previous = previousUpload.current;
+    previousUpload.current = snapshot.status.upload;
+    if (snapshot.status.upload || uploading) return;
+    const attempt = uploadAttempt.current;
+    if (attempt && courseId && latest?.id === attempt.upload_id) {
+      uploadAttempt.current = null;
+      saveUploadAttempt(uploadAttemptKey, null);
+      if (!documentId) onDocumentChange(courseId, latest.id);
+      setError(null);
+      setNotice("PDF guardado. Puedes iniciar la extracción desde la lista de documentos.");
+      return;
+    }
+    const expiry = attempt?.expires_at ?? previous?.expires_at;
+    if (expiry && Date.parse(expiry) <= Date.now()) {
+      uploadAttempt.current = null;
+      saveUploadAttempt(uploadAttemptKey, null);
+      setError(null);
+      setNotice("La reserva venció. Si el PDF no aparece en la lista, vuelve a seleccionarlo.");
+    }
+  }, [snapshot, courseId, uploadAttemptKey, uploading, documentId, onDocumentChange]);
 
-  useExecutionPolling(token, execution, async (updated, signal) => {
-    if (!courseId) return;
-    setError(null);
-    if (updated.status === "completed" && updated.document_id === selectedDocId && selectedDocId) {
-      await loadActivities(selectedDocId, courseId);
+  useEffect(() => {
+    if (courseId && documentsLoaded && documentId && !authorizedDocumentId) {
+      onDocumentChange(courseId, null);
     }
-    if (!signal.aborted) {
-      setExecutionByCourse((previous) => ({ ...previous, [courseId]: updated }));
-    }
-  }, setError);
+  }, [courseId, documentsLoaded, documentId, authorizedDocumentId, onDocumentChange]);
+
+  useEffect(() => {
+    setEditingActivityId(null);
+    setActivitiesError(null);
+    setActivityDocumentId(null);
+    if (!selectedDocId || !visible) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    void getDocumentActivities(token, selectedDocId, signal)
+      .then((result) => {
+        if (signal.aborted) return;
+        setActivities(result.activities);
+        setConflicts(result.conflicts);
+        setActivityDocumentId(selectedDocId);
+      })
+      .catch((err) => {
+        if (!signal.aborted) {
+          setActivitiesError(err instanceof Error ? err.message : "No se pudieron cargar las actividades.");
+        }
+      });
+    return () => controller.abort();
+  }, [selectedDocId, completedExecutionId, token, visible]);
 
   if (!course || !courseId) {
     return (
@@ -246,7 +303,7 @@ export function SyllabusSection({
 
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!courseId || docsLoading) return;
+    if (!courseId || !canStartOperation) return;
     const form = event.currentTarget;
     if (!selectedFile) {
       setError("Selecciona un archivo PDF antes de subir.");
@@ -255,52 +312,62 @@ export function SyllabusSection({
 
     setUploading(true);
     setError(null);
+    setNotice(null);
     try {
-      const uploaded = await uploadCourseDocument(token, courseId, selectedFile);
-      if (activeCourseRef.current !== courseId) return;
-      setDocuments((prev) => [uploaded, ...prev]);
-      setSelectedDocId(uploaded.id);
+      const reservation = await reserveSyllabusUpload(token, courseId, selectedFile.name);
+      uploadAttempt.current = reservation;
+      saveUploadAttempt(uploadAttemptKey, reservation);
+      if (mounted.current) onDocumentChange(courseId, null);
+      const uploaded = await uploadCourseDocument(token, courseId, selectedFile, reservation.upload_id);
+      uploadAttempt.current = null;
+      saveUploadAttempt(uploadAttemptKey, null);
+      if (!mounted.current) return;
+      setDocuments((current) => [uploaded, ...current.filter((item) => item.id !== uploaded.id)]);
+      onDocumentChange(courseId, uploaded.id);
       setSelectedFile(null);
       form.reset();
-      setActivities([]);
-      setConflicts([]);
-      setExecutionByCourse((prev) => {
-        const next = { ...prev };
-        delete next[courseId];
-        return next;
-      });
+      setNotice("PDF guardado. Puedes iniciar la extracción desde la lista de documentos.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error subiendo sílabo");
+      if (!mounted.current) return;
+      if (err instanceof ApiError && err.status === 409) {
+        setNotice("La carga no pudo continuar. Revisa el estado del curso antes de reintentar.");
+      } else {
+        if (err instanceof ApiError && [413, 415, 422].includes(err.status)) {
+          uploadAttempt.current = null;
+          saveUploadAttempt(uploadAttemptKey, null);
+          onDocumentChange(courseId, authorizedDocumentId);
+        }
+        setError(err instanceof Error ? err.message : "No se pudo subir el sílabo.");
+      }
     } finally {
-      setUploading(false);
+      if (mounted.current) {
+        refreshStatus();
+        setUploading(false);
+      }
     }
   }
 
   async function handleStartExtraction(documentId: string) {
-    if (!courseId) return;
+    if (!courseId || !canStartOperation) return;
+    onDocumentChange(courseId, documentId);
     setStartingExtraction(true);
     setError(null);
+    setNotice(null);
     try {
-      const started = await startDocumentExtraction(token, documentId);
-      setExecutionByCourse((prev) => ({
-        ...prev,
-        [courseId]: started,
-      }));
-      if (activeCourseRef.current === courseId) setSelectedDocId(documentId);
+      await startDocumentExtraction(token, documentId);
     } catch (err) {
-      if (activeCourseRef.current === courseId) {
-        setError(err instanceof Error ? err.message : "Error iniciando extracción");
+      if (!mounted.current) return;
+      if (err instanceof ApiError && err.status === 409) {
+        setNotice("Ya hay una carga o un análisis en curso. Se actualizó el seguimiento del curso.");
+      } else {
+        setError(err instanceof Error ? err.message : "No se pudo iniciar la extracción.");
       }
     } finally {
-      setStartingExtraction(false);
+      if (mounted.current) {
+        refreshStatus();
+        setStartingExtraction(false);
+      }
     }
-  }
-
-  async function handleSelectDocument(documentId: string) {
-    if (!courseId) return;
-    setSelectedDocId(documentId);
-    setEditingActivityId(null);
-    await loadActivities(documentId, courseId);
   }
 
   function startEditing(activity: ExtractedActivity, decision: "approved" | "edited") {
@@ -427,13 +494,14 @@ export function SyllabusSection({
               className="file-input"
               type="file"
               accept="application/pdf,.pdf"
+              disabled={!canStartOperation}
               onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
             />
           </div>
           <button
             type="submit"
             className="btn btn-primary"
-            disabled={docsLoading || uploading || !selectedFile}
+            disabled={!canStartOperation || !selectedFile}
             style={{ alignSelf: "flex-end" }}
           >
             {uploading ? "Subiendo PDF..." : "Subir sílabo PDF"}
@@ -446,16 +514,41 @@ export function SyllabusSection({
           </div>
         )}
 
+        {notice && (
+          <div className="alert alert--info" role="status" style={{ marginTop: "1rem" }}>
+            {notice}
+          </div>
+        )}
+        {!status && !statusError && !uploading && !startingExtraction && (
+          <p className="loading-state" role="status">Consultando estado del curso...</p>
+        )}
+        {statusError && (
+          <div className="alert alert--error" role="alert" style={{ marginTop: "1rem" }}>
+            No se pudo verificar el estado del curso. {statusError}{" "}
+            <button type="button" className="btn btn-secondary btn-sm" onClick={refreshStatus}>
+              Actualizar estado
+            </button>
+          </div>
+        )}
+        {status?.upload && (
+          <div className="alert alert--info" role="status" style={{ marginTop: "1rem" }}>
+            <strong>{status.upload.status === "receiving" ? "Recibiendo PDF" : "Carga pendiente"}:</strong>{" "}
+            {status.upload.filename}. Si la carga se interrumpió, podrás volver a seleccionar el archivo
+            después de las {new Date(status.upload.expires_at).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}.
+          </div>
+        )}
+
         <hr className="divider" style={{ margin: "1.25rem 0" }} />
 
         <h3 className="section-title">Documentos del curso</h3>
-        {docsLoading && (
+        {!documentsLoaded && !documentsError && (
           <div className="loading-state" role="status">
             Cargando documentos...
           </div>
         )}
 
-        {!docsLoading && documents.length === 0 && (
+        {documentsError && <p role="alert" className="alert alert--error">{documentsError}</p>}
+        {documentsLoaded && documents.length === 0 && (
           <div className="empty-state">
             <p className="empty-state-title">Sin sílabos cargados</p>
             <p className="empty-state-text" style={{ marginBottom: 0 }}>
@@ -464,7 +557,7 @@ export function SyllabusSection({
           </div>
         )}
 
-        {!docsLoading && documents.length > 0 && (
+        {documents.length > 0 && (
           <ul className="item-list">
             {documents.map((doc) => {
               const isSelected = selectedDocId === doc.id;
@@ -485,17 +578,19 @@ export function SyllabusSection({
                       className={`btn btn-sm ${
                         isSelected ? "btn-navy" : "btn-secondary"
                       }`}
-                      onClick={() => void handleSelectDocument(doc.id)}
+                      onClick={() => onDocumentChange(courseId, doc.id)}
                     >
                       Ver actividades
                     </button>
                     <button
                       type="button"
                       className="btn btn-primary btn-sm"
-                      disabled={startingExtraction || execution?.status === "pending" || execution?.status === "running"}
+                      disabled={!canStartOperation}
                       onClick={() => void handleStartExtraction(doc.id)}
                     >
-                      Extraer con IA
+                      {selectedExecution?.document_id === doc.id && selectedExecution.status === "failed"
+                        ? "Reintentar análisis"
+                        : "Extraer con IA"}
                     </button>
                   </div>
                 </li>
@@ -518,6 +613,13 @@ export function SyllabusSection({
           >
             <strong>Estado de extracción:</strong>{" "}
             {EXECUTION_STATUS_LABELS[execution.status]}
+            {execution.document_id !== selectedDocId && (
+              <span>
+                {" · "}
+                {documents.find((item) => item.id === execution.document_id)?.filename
+                  ?? "Otro documento del curso"}
+              </span>
+            )}
             <ExecutionStage execution={execution} />
             {execution.total_pages !== null && (
               <span>
@@ -542,7 +644,9 @@ export function SyllabusSection({
             </div>
           )}
 
-          {!activitiesLoading && conflicts.length > 0 && (
+          {activitiesError && <p role="alert" className="alert alert--error">{activitiesError}</p>}
+
+          {activityDocumentId === selectedDocId && conflicts.length > 0 && (
             <div className="alert alert--warning" style={{ marginBottom: "1.25rem" }}>
               <h3 className="section-title" style={{ color: "inherit" }}>
                 Conflictos y advertencias ({conflicts.length})
@@ -570,7 +674,7 @@ export function SyllabusSection({
             </div>
           )}
 
-          {!activitiesLoading && activities.length === 0 && (
+          {activityDocumentId === selectedDocId && activities.length === 0 && (
             <div className="empty-state">
               <p className="empty-state-title">Sin actividades extraídas</p>
               <p className="empty-state-text" style={{ marginBottom: 0 }}>
@@ -580,7 +684,7 @@ export function SyllabusSection({
             </div>
           )}
 
-          {!activitiesLoading && activities.length > 0 && (
+          {activityDocumentId === selectedDocId && activities.length > 0 && (
             <div className="panel-grid">
               <div className="card-header" style={{ marginBottom: 0 }}>
                 <h3 className="card-title">

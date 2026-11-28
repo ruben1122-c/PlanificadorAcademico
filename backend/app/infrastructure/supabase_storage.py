@@ -36,7 +36,6 @@ class SupabaseStorageGateway:
         encoded_path = self._encode_path(path)
         url = f"{self._base_url}/storage/v1/object/{bucket}/{encoded_path}"
         headers = self._headers(content_type=content_type)
-        headers["x-upsert"] = "true"
 
         try:
             with httpx.Client(timeout=30.0) as client:
@@ -70,3 +69,13 @@ class SupabaseStorageGateway:
             )
 
         return response.content
+
+    def delete_private_file(self, bucket: str, path: str) -> None:
+        url = f"{self._base_url}/storage/v1/object/{bucket}/{self._encode_path(path)}"
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.delete(url, headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ExternalServiceError("No se pudo limpiar el archivo de la carga fallida.") from exc
+        if response.status_code >= 400 and response.status_code != 404:
+            raise ExternalServiceError("No se pudo limpiar el archivo de la carga fallida.")

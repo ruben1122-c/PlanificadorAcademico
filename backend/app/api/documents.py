@@ -22,7 +22,7 @@ from app.api.schemas import (
     DocumentResponse,
     ExecutionResponse,
 )
-from app.application.document_service import DocumentService
+from app.application.document_service import MAX_FILE_SIZE_BYTES, DocumentService
 from app.application.extraction_service import ExtractionService
 from app.domain.models import AuthenticatedUser
 
@@ -34,20 +34,22 @@ router = APIRouter(prefix="/documents", tags=["documents"])
     response_model=DocumentResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def upload_document(
+def upload_document(
     course_id: UUID = Form(...),
     file: UploadFile = File(...),
+    upload_id: UUID | None = Form(default=None),
     current_user: AuthenticatedUser = Depends(get_current_user),
     document_service: DocumentService = Depends(get_document_service),
 ) -> DocumentResponse:
     """Upload a syllabus PDF via multipart/form-data to private Supabase Storage."""
-    content = await file.read()
+    content = file.file.read(MAX_FILE_SIZE_BYTES + 1)
     document = document_service.upload_syllabus(
         owner_id=current_user.id,
         course_id=course_id,
         filename=file.filename,
         content_type=file.content_type,
         content=content,
+        upload_id=upload_id,
     )
     return DocumentResponse.model_validate(document)
 

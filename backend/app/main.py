@@ -23,6 +23,7 @@ from app.domain.exceptions import (
     ExecutionNotFoundError,
     ExternalServiceError,
     PlanNotFoundError,
+    SyllabusBusyError,
     ValidationError,
 )
 
@@ -35,6 +36,7 @@ _ERROR_STATUS_MAP: dict[type[DomainError], int] = {
     ExecutionNotFoundError: status.HTTP_404_NOT_FOUND,
     ActivityNotFoundError: status.HTTP_404_NOT_FOUND,
     PlanNotFoundError: status.HTTP_404_NOT_FOUND,
+    SyllabusBusyError: status.HTTP_409_CONFLICT,
     ValidationError: status.HTTP_422_UNPROCESSABLE_ENTITY,
     ConfigurationError: status.HTTP_500_INTERNAL_SERVER_ERROR,
     ExternalServiceError: status.HTTP_502_BAD_GATEWAY,

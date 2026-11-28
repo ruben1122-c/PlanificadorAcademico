@@ -66,6 +66,8 @@ npm run dev
 
 Abre `http://localhost:5173`. El sílabo ficticio y el guion de demostración se entregan por separado con la carpeta `docs/`.
 
+En **Sílabo y revisión**, primero pulsa **Subir sílabo PDF**. Cuando aparezca el documento guardado, pulsa **Extraer con IA**. Puedes recargar durante la carga o el análisis y volver al mismo curso. Si se interrumpió la transferencia, espera a que venza la reserva de cinco minutos y vuelve a seleccionar el archivo. Si el PDF ya está guardado y falla el análisis, usa **Reintentar análisis** sobre el documento existente.
+
 ## Verificación local
 
 - Para el ensayo, usa cuentas de prueba de tu proyecto de Supabase. Si guardas sus credenciales en `backend/.env.test.local`, el archivo queda excluido. La API y el worker cargan su configuración desde `backend/.env`.

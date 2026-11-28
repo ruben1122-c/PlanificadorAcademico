@@ -14,7 +14,7 @@ class GroqPrincipal:
     def __init__(self, api_key: str, model: str) -> None:
         self._model = ChatGroq(
             api_key=api_key, model=model, temperature=0, timeout=15, max_retries=1
-        ).with_structured_output(Delegation)
+        ).with_structured_output(Delegation, method="json_schema")
 
     def delegate(self, workflow: Workflow) -> None:
         goal = (
